@@ -6,8 +6,6 @@ Sources: yfinance for spots/FX/yields, LBMA scraping for fixings.
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import streamlit as st
 
@@ -157,101 +155,6 @@ def get_spot_in_currency(metal: str, currency: str) -> float | None:
         return round(usd_price / rate, 2)
     return usd_price  # fallback to USD if FX unavailable
 
-
-# ── Ratios & spreads ─────────────────────────────────────────────────────────
-
-def get_gold_silver_ratio(spots_df: pd.DataFrame) -> float | None:
-    """Calculate XAU/XAG ratio."""
-    try:
-        xau = spots_df.loc[spots_df["Metal"] == "XAU", "Spot (USD)"].values[0]
-        xag = spots_df.loc[spots_df["Metal"] == "XAG", "Spot (USD)"].values[0]
-        if xau and xag:
-            return round(xau / xag, 2)
-    except Exception:
-        pass
-    return None
-
-
-def get_pgm_spread(spots_df: pd.DataFrame) -> float | None:
-    """Calculate XPT - XPD spread."""
-    try:
-        xpt = spots_df.loc[spots_df["Metal"] == "XPT", "Spot (USD)"].values[0]
-        xpd = spots_df.loc[spots_df["Metal"] == "XPD", "Spot (USD)"].values[0]
-        if xpt and xpd:
-            return round(xpt - xpd, 2)
-    except Exception:
-        pass
-    return None
-
-
-# ── Gold/Silver ratio history ────────────────────────────────────────────────
-
-@st.cache_data(ttl=3600)
-def get_ratio_history(period: str = "1y") -> pd.DataFrame:
-    """Historical Gold/Silver ratio."""
-    try:
-        gold = yf.download("GC=F", period=period, interval="1d", progress=False)["Close"]
-        silver = yf.download("SI=F", period=period, interval="1d", progress=False)["Close"]
-        # Flatten if MultiIndex
-        if isinstance(gold.columns, pd.MultiIndex):
-            gold = gold.droplevel(level=1, axis=1)
-        if isinstance(silver.columns, pd.MultiIndex):
-            silver = silver.droplevel(level=1, axis=1)
-        # Align
-        df = pd.DataFrame({"Gold": gold.squeeze(), "Silver": silver.squeeze()}).dropna()
-        df["Ratio"] = df["Gold"] / df["Silver"]
-        return df[["Ratio"]]
-    except Exception:
-        return pd.DataFrame()
-
-
-# ── LBMA Fixings ─────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=3600)
-def get_lbma_fixings() -> dict:
-    """
-    Fetch latest LBMA fixings.
-    Falls back to placeholder if scraping fails.
-    """
-    fixings = {
-        "Gold AM (USD)": None,
-        "Gold PM (USD)": None,
-        "Silver (USD)": None,
-    }
-    
-    try:
-        # Try LBMA gold price
-        url = "https://www.lbma.org.uk/prices-and-data/precious-metal-prices#/table"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            # LBMA uses JS-rendered tables, so scraping may not work
-            # Fall through to yfinance fallback
-    except Exception:
-        pass
-    
-    # Fallback: use yfinance previous close as proxy
-    try:
-        t = yf.Ticker("GC=F")
-        info = t.fast_info
-        prev = info.get("previousClose", None)
-        if prev:
-            fixings["Gold AM (USD)"] = round(prev, 2)
-            fixings["Gold PM (USD)"] = round(prev, 2)
-    except Exception:
-        pass
-    
-    try:
-        t = yf.Ticker("SI=F")
-        info = t.fast_info
-        prev = info.get("previousClose", None)
-        if prev:
-            fixings["Silver (USD)"] = round(prev, 2)
-    except Exception:
-        pass
-    
-    return fixings
 
 
 # ── USD Yield Curve ──────────────────────────────────────────────────────────
