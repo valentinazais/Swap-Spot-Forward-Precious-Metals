@@ -6,6 +6,8 @@ Sources: yfinance for spots/FX/yields, LBMA scraping for fixings.
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import streamlit as st
 
@@ -52,22 +54,27 @@ MATURITIES = {
     "1Y": 1.0,
 }
 
-# US Treasury CMT column names → (tenor label, years fraction)
-# Source: https://home.treasury.gov (no API key required)
-TREASURY_COL_MAP = {
-    "1 Mo":  ("1M",  1 / 12),
-    "2 Mo":  ("2M",  2 / 12),
-    "3 Mo":  ("3M",  3 / 12),
-    "4 Mo":  ("4M",  4 / 12),
-    "6 Mo":  ("6M",  6 / 12),
-    "1 Yr":  ("1Y",  1.0),
-    "2 Yr":  ("2Y",  2.0),
-    "3 Yr":  ("3Y",  3.0),
-    "5 Yr":  ("5Y",  5.0),
-    "7 Yr":  ("7Y",  7.0),
-    "10 Yr": ("10Y", 10.0),
-    "20 Yr": ("20Y", 20.0),
-    "30 Yr": ("30Y", 30.0),
+# US Treasury tickers on yfinance for yield curve
+YIELD_TICKERS = {
+    "1M": "^IRX",   # 13-week T-bill (proxy)
+    "3M": "^IRX",   # 13-week T-bill
+    "6M": "^IRX",   # proxy
+    "1Y": "^FVX",   # proxy
+    "2Y": "^FVX",   # 5-year note (proxy)
+    "5Y": "^FVX",
+    "10Y": "^TNX",
+    "30Y": "^TYX",
+}
+
+YIELD_TENORS = {
+    "1M": 1 / 12,
+    "3M": 3 / 12,
+    "6M": 6 / 12,
+    "1Y": 1.0,
+    "2Y": 2.0,
+    "5Y": 5.0,
+    "10Y": 10.0,
+    "30Y": 30.0,
 }
 
 
@@ -151,68 +158,177 @@ def get_spot_in_currency(metal: str, currency: str) -> float | None:
     return usd_price  # fallback to USD if FX unavailable
 
 
+# ── Ratios & spreads ─────────────────────────────────────────────────────────
 
-# ── USD Yield Curve (US Treasury CMT) ───────────────────────────────────────
+def get_gold_silver_ratio(spots_df: pd.DataFrame) -> float | None:
+    """Calculate XAU/XAG ratio."""
+    try:
+        xau = spots_df.loc[spots_df["Metal"] == "XAU", "Spot (USD)"].values[0]
+        xag = spots_df.loc[spots_df["Metal"] == "XAG", "Spot (USD)"].values[0]
+        if xau and xag:
+            return round(xau / xag, 2)
+    except Exception:
+        pass
+    return None
 
-# Years fractions for all known tenors (used for interpolation)
-_TENOR_YEARS: dict[str, float] = {
-    "1W": 7 / 365,
-    "1M": 1 / 12,  "2M": 2 / 12,  "3M": 3 / 12,  "4M": 4 / 12,
-    "6M": 6 / 12,
-    "1Y": 1.0,  "2Y": 2.0,  "3Y": 3.0,  "5Y": 5.0,
-    "7Y": 7.0,  "10Y": 10.0,  "20Y": 20.0,  "30Y": 30.0,
-}
 
+def get_pgm_spread(spots_df: pd.DataFrame) -> float | None:
+    """Calculate XPT - XPD spread."""
+    try:
+        xpt = spots_df.loc[spots_df["Metal"] == "XPT", "Spot (USD)"].values[0]
+        xpd = spots_df.loc[spots_df["Metal"] == "XPD", "Spot (USD)"].values[0]
+        if xpt and xpd:
+            return round(xpt - xpd, 2)
+    except Exception:
+        pass
+    return None
+
+
+# ── Gold/Silver ratio history ────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def get_ratio_history(period: str = "1y") -> pd.DataFrame:
+    """Historical Gold/Silver ratio."""
+    try:
+        gold = yf.download("GC=F", period=period, interval="1d", progress=False)["Close"]
+        silver = yf.download("SI=F", period=period, interval="1d", progress=False)["Close"]
+        # Flatten if MultiIndex
+        if isinstance(gold.columns, pd.MultiIndex):
+            gold = gold.droplevel(level=1, axis=1)
+        if isinstance(silver.columns, pd.MultiIndex):
+            silver = silver.droplevel(level=1, axis=1)
+        # Align
+        df = pd.DataFrame({"Gold": gold.squeeze(), "Silver": silver.squeeze()}).dropna()
+        df["Ratio"] = df["Gold"] / df["Silver"]
+        return df[["Ratio"]]
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── LBMA Fixings ─────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def get_lbma_fixings() -> dict:
+    """
+    Fetch latest LBMA fixings.
+    Falls back to placeholder if scraping fails.
+    """
+    fixings = {
+        "Gold AM (USD)": None,
+        "Gold PM (USD)": None,
+        "Silver (USD)": None,
+    }
+    
+    try:
+        # Try LBMA gold price
+        url = "https://www.lbma.org.uk/prices-and-data/precious-metal-prices#/table"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # LBMA uses JS-rendered tables, so scraping may not work
+            # Fall through to yfinance fallback
+    except Exception:
+        pass
+    
+    # Fallback: use yfinance previous close as proxy
+    try:
+        t = yf.Ticker("GC=F")
+        info = t.fast_info
+        prev = info.get("previousClose", None)
+        if prev:
+            fixings["Gold AM (USD)"] = round(prev, 2)
+            fixings["Gold PM (USD)"] = round(prev, 2)
+    except Exception:
+        pass
+    
+    try:
+        t = yf.Ticker("SI=F")
+        info = t.fast_info
+        prev = info.get("previousClose", None)
+        if prev:
+            fixings["Silver (USD)"] = round(prev, 2)
+    except Exception:
+        pass
+    
+    return fixings
+
+
+# ── USD Yield Curve ──────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
 def get_usd_yield_curve() -> pd.DataFrame:
     """
-    Fetch US Treasury Constant Maturity (CMT) yield curve directly from
-    treasury.gov — 13 real tenors, no API key required.
+    Fetch USD yield curve from Treasury yields.
     Returns DataFrame with columns: Tenor, Years, Rate (%).
     """
-    year = datetime.now().year
-    url = (
-        "https://home.treasury.gov/resource-center/data-chart-center/"
-        f"interest-rates/daily-treasury-rates.csv/{year}/all"
-        f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}&download=true"
-    )
-    try:
-        df_raw = pd.read_csv(url)
-        # Most recent non-empty row
-        latest = df_raw.dropna(how="all").iloc[-1]
-        rows = []
-        for col, (tenor, years) in TREASURY_COL_MAP.items():
-            if col in df_raw.columns:
-                val = latest[col]
-                if pd.notna(val):
-                    rows.append({
-                        "Tenor": tenor,
-                        "Years": round(years, 6),
-                        "Rate (%)": round(float(val), 4),
-                    })
-        if rows:
-            return pd.DataFrame(rows).sort_values("Years").reset_index(drop=True)
-    except Exception:
-        pass
+    rows = []
+    seen_tickers = set()
+    
+    for tenor, ticker in YIELD_TICKERS.items():
+        if ticker in seen_tickers:
+            continue
+        seen_tickers.add(ticker)
+        try:
+            t = yf.Ticker(ticker)
+            info = t.fast_info
+            rate = info.get("lastPrice", None) or info.get("previousClose", None)
+            if rate:
+                rows.append({
+                    "Ticker": ticker,
+                    "Rate": rate,
+                })
+        except Exception:
+            pass
+    
+    # Build a simple curve from what we have
+    # Map actual tickers to approximate tenors
+    curve_map = {
+        "^IRX": [("3M", 0.25)],
+        "^FVX": [("5Y", 5.0)],
+        "^TNX": [("10Y", 10.0)],
+        "^TYX": [("30Y", 30.0)],
+    }
+    
+    curve_rows = []
+    for r in rows:
+        ticker = r["Ticker"]
+        rate = r["Rate"]
+        if ticker in curve_map:
+            for tenor, years in curve_map[ticker]:
+                curve_rows.append({
+                    "Tenor": tenor,
+                    "Years": years,
+                    "Rate (%)": round(rate, 4),
+                })
+    
+    # Interpolate missing standard tenors
+    if curve_rows:
+        df = pd.DataFrame(curve_rows).sort_values("Years").reset_index(drop=True)
+        # Interpolate for standard maturities used in forward pricing
+        standard_tenors = [
+            ("1W", 7/365), ("1M", 1/12), ("2M", 2/12),
+            ("3M", 3/12), ("6M", 6/12), ("1Y", 1.0),
+        ]
+        interp_rows = []
+        for tenor, years in standard_tenors:
+            rate = np.interp(years, df["Years"].values, df["Rate (%)"].values)
+            interp_rows.append({
+                "Tenor": tenor,
+                "Years": round(years, 4),
+                "Rate (%)": round(rate, 4),
+            })
+        return pd.DataFrame(interp_rows)
+    
     return pd.DataFrame(columns=["Tenor", "Years", "Rate (%)"])
 
 
 def get_rate_for_tenor(tenor: str) -> float | None:
-    """
-    Return the CMT rate for a tenor string.
-    If the tenor is not directly available (e.g. 1W), interpolate from the curve.
-    """
+    """Get interpolated USD rate for a given tenor string."""
     curve = get_usd_yield_curve()
     if curve.empty:
         return None
-    # Direct match
     match = curve.loc[curve["Tenor"] == tenor, "Rate (%)"]
     if not match.empty:
-        return float(match.values[0])
-    # Interpolate using known years fraction
-    if tenor in _TENOR_YEARS:
-        years = _TENOR_YEARS[tenor]
-        rate = np.interp(years, curve["Years"].values, curve["Rate (%)"].values)
-        return round(float(rate), 4)
+        return match.values[0]
     return None
