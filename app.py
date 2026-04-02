@@ -25,23 +25,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-hd_c1, hd_c2 = st.columns([6, 1])
-hd_c1.title("Spot Forward Swap Pricer")
-if hd_c2.button("Refresh", use_container_width=True):
-    st.cache_data.clear()
+st.title("Spot Forward Swap Pricer")
 
 # -- Results container placed first so it renders above the inputs --
 results_container = st.container()
-
-st.markdown("#### Contract")
 
 if "sw_reset_counter" not in st.session_state:
     st.session_state.sw_reset_counter = 0
 sw_rc = st.session_state.sw_reset_counter
 
-if st.button("Reset to Defaults", key="sw_reset"):
-    st.session_state.sw_reset_counter = sw_rc + 1
-    st.rerun()
 
 st.markdown("#### Inputs")
 sw_c1, sw_c2, sw_c3, sw_c4, sw_c5 = st.columns(5)
@@ -136,10 +128,16 @@ if sw_spot > 0:
 
     # Fill results container at the top
     with results_container:
-        m_c1, m_c2, m_c3 = st.columns(3)
+        m_c1, m_c2, m_c3, m_c4, m_c5 = st.columns([3, 3, 3, 1, 1])
         m_c1.metric("Swap Points", f"{res['Swap Points']:+,.4f}")
         m_c2.metric("Cost of Carry (annualized)", f"{res['Cost of Carry (% ann.)']:+.4f}%")
         m_c3.metric("Net Cash Flow", f"{ccy_sym}{res['Net CF (USD)']:+,.2f}")
+        m_c4.markdown("&nbsp;")  # vertical spacer to align buttons with metrics
+        if m_c4.button("Refresh", use_container_width=True):
+            st.cache_data.clear()
+        if m_c5.button("Reset Inputs", key="sw_reset", use_container_width=True):
+            st.session_state.sw_reset_counter = sw_rc + 1
+            st.rerun()
 
     # -- Charts --
     st.markdown("**Swap Points Term Structure**")
