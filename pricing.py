@@ -22,67 +22,6 @@ def forward_price(spot: float, r: float, lease_rate: float, T: float) -> float:
     return spot * np.exp((r - lease_rate) * T)
 
 
-def forward_points(fwd: float, spot: float) -> float:
-    """Forward points = Forward - Spot."""
-    return fwd - spot
-
-
-def forward_premium_pct(fwd: float, spot: float) -> float:
-    """Forward premium in %. = (F - S) / S × 100."""
-    if spot == 0:
-        return 0.0
-    return (fwd - spot) / spot * 100
-
-
-def price_forward(spot: float, r_pct: float, lease_pct: float, T: float) -> dict:
-    """
-    Full forward pricing output.
-    
-    Args:
-        spot: spot price
-        r_pct: USD rate in % (e.g. 5.0)
-        lease_pct: lease rate in % (e.g. 1.5)
-        T: maturity in years
-    
-    Returns:
-        dict with fwd_price, fwd_points, fwd_premium_pct
-    """
-    r = r_pct / 100
-    lease = lease_pct / 100
-    fwd = forward_price(spot, r, lease, T)
-    pts = forward_points(fwd, spot)
-    prem = forward_premium_pct(fwd, spot)
-    return {
-        "Forward Price": round(fwd, 4),
-        "Forward Points": round(pts, 4),
-        "Premium (%)": round(prem, 4),
-    }
-
-
-def price_forward_term_structure(spot: float, r_pct: float, lease_pct: float,
-                                  maturities: dict) -> pd.DataFrame:
-    """
-    Price forwards across all standard maturities.
-    
-    Args:
-        spot: spot price
-        r_pct: USD rate in %
-        lease_pct: lease rate in %
-        maturities: dict {label: T_years}
-    
-    Returns:
-        DataFrame with one row per maturity
-    """
-    rows = []
-    for label, T in maturities.items():
-        result = price_forward(spot, r_pct, lease_pct, T)
-        result["Maturity"] = label
-        result["T (years)"] = round(T, 4)
-        rows.append(result)
-    df = pd.DataFrame(rows)
-    return df[["Maturity", "T (years)", "Forward Price", "Forward Points", "Premium (%)"]]
-
-
 # ── Swap Pricing ─────────────────────────────────────────────────────────────
 
 def price_swap(spot: float, r_pct: float, lease_pct: float,
