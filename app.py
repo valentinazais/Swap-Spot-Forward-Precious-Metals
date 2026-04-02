@@ -146,16 +146,34 @@ if sw_spot > 0:
 
     mat_labels = list(MATURITIES.keys())
     mat_years = list(MATURITIES.values())
-    swap_pts_term = [
-        sw_spot * (np.exp((sw_r_pct / 100 - sw_lease_pct / 100) * t) - 1)
-        for t in mat_years
-    ]
+
+    if swap_type == "forward-forward":
+        # Near leg forward price (fixed anchor)
+        near_fwd = sw_spot * np.exp((sw_r_pct / 100 - sw_lease_pct / 100) * T_near)
+        # Swap pts = F(bucket) - F(T_near) ; zero for buckets <= T_near
+        swap_pts_term = [
+            sw_spot * np.exp((sw_r_pct / 100 - sw_lease_pct / 100) * t) - near_fwd
+            if t > T_near else 0.0
+            for t in mat_years
+        ]
+        bar_colors = [
+            ("#4CAF50" if v > 0 else "#F44336") if mat_years[i] > T_near else "rgba(120,120,120,0.35)"
+            for i, v in enumerate(swap_pts_term)
+        ]
+        bar_title = f"Swap Points from {near_mat} ({currency}/oz)"
+    else:
+        swap_pts_term = [
+            sw_spot * (np.exp((sw_r_pct / 100 - sw_lease_pct / 100) * t) - 1)
+            for t in mat_years
+        ]
+        bar_colors = ["#4CAF50" if v >= 0 else "#F44336" for v in swap_pts_term]
+        bar_title = f"Swap Points from Spot ({currency}/oz)"
 
     fig_term = go.Figure()
     fig_term.add_trace(go.Bar(
         x=mat_labels, y=swap_pts_term,
-        marker_color=["#4CAF50" if v >= 0 else "#F44336" for v in swap_pts_term],
-        text=[f"{v:+.2f}" for v in swap_pts_term],
+        marker_color=bar_colors,
+        text=[f"{v:+.2f}" if abs(v) > 0 else "" for v in swap_pts_term],
         textposition="outside",
         name="Swap Points",
     ))
@@ -167,15 +185,23 @@ if sw_spot > 0:
             marker=dict(size=14, color="white", line=dict(color="#FFD700", width=2)),
             name="Selected",
         ))
+    # For forward-forward: mark the near leg with a dashed line
+    if swap_type == "forward-forward" and near_mat in mat_labels:
+        fig_term.add_vline(
+            x=mat_labels.index(near_mat),
+            line=dict(color="rgba(255,215,0,0.5)", dash="dash", width=1),
+            annotation_text=f"Near: {near_mat}",
+            annotation_position="top",
+        )
     fig_term.add_hline(y=0, line=dict(color="rgba(255,255,255,0.2)", width=1))
     fig_term.update_layout(
         height=300,
         margin=dict(l=0, r=0, t=30, b=0),
         yaxis=dict(
-            title=f"Swap Points ({currency}/oz)",
+            title=bar_title,
             range=[
                 min(0, min(swap_pts_term)) * 1.2,
-                max(swap_pts_term) * 1.18,
+                max(swap_pts_term) * 1.18 if max(swap_pts_term) > 0 else 1,
             ],
         ),
         showlegend=True,
