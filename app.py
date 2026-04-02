@@ -35,10 +35,10 @@ if "sw_reset_counter" not in st.session_state:
 sw_rc = st.session_state.sw_reset_counter
 
 
-btn_c1, btn_c2, btn_c3 = st.columns([8, 1, 1])
-if btn_c2.button("Refresh", use_container_width=True):
+btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 8])
+if btn_c1.button("Refresh data", use_container_width=True):
     st.cache_data.clear()
-if btn_c3.button("Reset Inputs", key="sw_reset", use_container_width=True):
+if btn_c2.button("Reset inputs", key="sw_reset", use_container_width=True):
     st.session_state.sw_reset_counter = sw_rc + 1
     st.rerun()
 
