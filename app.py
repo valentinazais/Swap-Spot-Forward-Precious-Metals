@@ -11,6 +11,7 @@ from data import (
     get_spot_prices,
     get_fx_rates,
     get_spot_in_currency,
+    get_usd_yield_curve,
     get_rate_for_tenor,
     MATURITIES,
     CURRENCIES,
@@ -56,7 +57,7 @@ notional = sw_c5.number_input(
     "Notional (oz)", value=100.0, min_value=0.1, format="%.2f", key=f"sw_notional_{sw_rc}",
 )
 
-mk_c1, mk_c2, mk_c3, mk_c4 = st.columns(4)
+mk_c1, mk_c2, mk_c3, mk_c4, mk_c5 = st.columns(5)
 
 # Auto-fill spot in selected currency
 sw_spot_default = 0.0
@@ -71,18 +72,28 @@ sw_spot = mk_c1.number_input(
     f"Spot ({currency})", value=sw_spot_default, format="%.2f", key=f"sw_spot_{sw_rc}_{sw_metal}_{currency}",
 )
 
+# Rate tenor selector — picks which Treasury CMT rate seeds the USD Rate input
+yc_df = get_usd_yield_curve()
+yc_tenors = yc_df["Tenor"].tolist() if not yc_df.empty else ["3M"]
+default_tenor_idx = yc_tenors.index("3M") if "3M" in yc_tenors else 0
+rate_tenor = mk_c2.selectbox(
+    "Rate Tenor", yc_tenors,
+    index=default_tenor_idx, key=f"sw_rate_tenor_{sw_rc}",
+    help="Selects which US Treasury CMT tenor seeds the USD Rate below",
+)
+
 sw_rate_default = 4.5
 try:
-    r = get_rate_for_tenor("3M")
+    r = get_rate_for_tenor(rate_tenor)
     if r:
         sw_rate_default = float(r)
 except Exception:
     pass
 
-sw_r_pct = mk_c2.number_input(
-    "USD Rate (%)", value=sw_rate_default, format="%.4f", key=f"sw_rate_{sw_rc}",
+sw_r_pct = mk_c3.number_input(
+    f"USD Rate ({rate_tenor}) %", value=sw_rate_default, format="%.4f", key=f"sw_rate_{sw_rc}_{rate_tenor}",
 )
-sw_lease_pct = mk_c3.number_input(
+sw_lease_pct = mk_c4.number_input(
     "Lease Rate (%)", value=0.5, format="%.4f", key=f"sw_lease_{sw_rc}",
 )
 
@@ -90,7 +101,7 @@ mat_options = list(MATURITIES.keys())
 
 if swap_type == "forward-forward":
     far_idx = min(4, len(mat_options) - 1)
-    far_mat = mk_c4.selectbox(
+    far_mat = mk_c5.selectbox(
         "Far Leg Maturity", mat_options,
         index=far_idx, key=f"sw_far_{sw_rc}",
     )
@@ -110,19 +121,49 @@ if swap_type == "forward-forward":
         T_near = 0.0
 else:
     far_idx = 3
-    far_mat = mk_c4.selectbox(
+    far_mat = mk_c5.selectbox(
         "Far Leg Maturity", mat_options,
         index=min(far_idx, len(mat_options) - 1), key=f"sw_far_{sw_rc}",
     )
     T_far = MATURITIES[far_mat]
     T_near = 0.0
 
-# -- Show live FX rate for reference --
+# -- Show live FX rate + yield curve expander --
 if currency != "USD":
     fx = get_fx_rates()
     rate_val = fx.get(currency)
     if rate_val:
         st.caption(f"FX: 1 {currency} = {rate_val:.4f} USD  |  1 USD = {1/rate_val:.4f} {currency}")
+
+if not yc_df.empty:
+    with st.expander("US Treasury Yield Curve (live CMT rates)", expanded=False):
+        fig_yc = go.Figure(go.Bar(
+            x=yc_df["Tenor"],
+            y=yc_df["Rate (%)"],
+            marker_color="#4A90D9",
+            text=[f"{v:.2f}%" for v in yc_df["Rate (%)"]],
+            textposition="outside",
+        ))
+        # Highlight selected tenor
+        if rate_tenor in yc_df["Tenor"].values:
+            hi_idx = yc_df["Tenor"].tolist().index(rate_tenor)
+            fig_yc.add_trace(go.Scatter(
+                x=[rate_tenor], y=[yc_df["Rate (%)"].iloc[hi_idx]],
+                mode="markers",
+                marker=dict(size=14, color="white", line=dict(color="#FFD700", width=2)),
+                name="Selected tenor",
+            ))
+        fig_yc.update_layout(
+            height=260,
+            margin=dict(l=0, r=0, t=10, b=0),
+            yaxis_title="Rate (%)",
+            showlegend=False,
+        )
+        st.plotly_chart(fig_yc, use_container_width=True)
+        st.dataframe(
+            yc_df.rename(columns={"Rate (%)": "Rate (%)"}),
+            use_container_width=True, hide_index=True,
+        )
 
 # -- Compute --
 
