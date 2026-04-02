@@ -87,13 +87,35 @@ sw_lease_pct = mk_c3.number_input(
 )
 
 mat_options = list(MATURITIES.keys())
-far_idx = 3 if swap_type == "spot-forward" else 4
-far_mat = mk_c4.selectbox(
-    "Far Leg Maturity", mat_options,
-    index=min(far_idx, len(mat_options) - 1), key=f"sw_far_{sw_rc}",
-)
-T_far = MATURITIES[far_mat]
-T_near = 0.0
+
+if swap_type == "forward-forward":
+    far_idx = min(4, len(mat_options) - 1)
+    far_mat = mk_c4.selectbox(
+        "Far Leg Maturity", mat_options,
+        index=far_idx, key=f"sw_far_{sw_rc}",
+    )
+    T_far = MATURITIES[far_mat]
+
+    # Near leg options: only maturities strictly shorter than the far leg
+    near_options = [m for m in mat_options if MATURITIES[m] < T_far]
+    if near_options:
+        near_mat = st.selectbox(
+            "Near Leg Maturity", near_options,
+            index=len(near_options) - 1, key=f"sw_near_{sw_rc}",
+            help="Near leg of the forward-forward swap (must settle before far leg)",
+        )
+        T_near = MATURITIES[near_mat]
+    else:
+        st.warning("No valid near leg — select a longer far leg maturity.")
+        T_near = 0.0
+else:
+    far_idx = 3
+    far_mat = mk_c4.selectbox(
+        "Far Leg Maturity", mat_options,
+        index=min(far_idx, len(mat_options) - 1), key=f"sw_far_{sw_rc}",
+    )
+    T_far = MATURITIES[far_mat]
+    T_near = 0.0
 
 # -- Show live FX rate for reference --
 if currency != "USD":
