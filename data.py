@@ -52,27 +52,22 @@ MATURITIES = {
     "1Y": 1.0,
 }
 
-# US Treasury tickers on yfinance for yield curve
-YIELD_TICKERS = {
-    "1M": "^IRX",   # 13-week T-bill (proxy)
-    "3M": "^IRX",   # 13-week T-bill
-    "6M": "^IRX",   # proxy
-    "1Y": "^FVX",   # proxy
-    "2Y": "^FVX",   # 5-year note (proxy)
-    "5Y": "^FVX",
-    "10Y": "^TNX",
-    "30Y": "^TYX",
-}
-
-YIELD_TENORS = {
-    "1M": 1 / 12,
-    "3M": 3 / 12,
-    "6M": 6 / 12,
-    "1Y": 1.0,
-    "2Y": 2.0,
-    "5Y": 5.0,
-    "10Y": 10.0,
-    "30Y": 30.0,
+# US Treasury CMT column names → (tenor label, years fraction)
+# Source: https://home.treasury.gov (no API key required)
+TREASURY_COL_MAP = {
+    "1 Mo":  ("1M",  1 / 12),
+    "2 Mo":  ("2M",  2 / 12),
+    "3 Mo":  ("3M",  3 / 12),
+    "4 Mo":  ("4M",  4 / 12),
+    "6 Mo":  ("6M",  6 / 12),
+    "1 Yr":  ("1Y",  1.0),
+    "2 Yr":  ("2Y",  2.0),
+    "3 Yr":  ("3Y",  3.0),
+    "5 Yr":  ("5Y",  5.0),
+    "7 Yr":  ("7Y",  7.0),
+    "10 Yr": ("10Y", 10.0),
+    "20 Yr": ("20Y", 20.0),
+    "30 Yr": ("30Y", 30.0),
 }
 
 
@@ -157,81 +152,67 @@ def get_spot_in_currency(metal: str, currency: str) -> float | None:
 
 
 
-# ── USD Yield Curve ──────────────────────────────────────────────────────────
+# ── USD Yield Curve (US Treasury CMT) ───────────────────────────────────────
+
+# Years fractions for all known tenors (used for interpolation)
+_TENOR_YEARS: dict[str, float] = {
+    "1W": 7 / 365,
+    "1M": 1 / 12,  "2M": 2 / 12,  "3M": 3 / 12,  "4M": 4 / 12,
+    "6M": 6 / 12,
+    "1Y": 1.0,  "2Y": 2.0,  "3Y": 3.0,  "5Y": 5.0,
+    "7Y": 7.0,  "10Y": 10.0,  "20Y": 20.0,  "30Y": 30.0,
+}
+
 
 @st.cache_data(ttl=300)
 def get_usd_yield_curve() -> pd.DataFrame:
     """
-    Fetch USD yield curve from Treasury yields.
+    Fetch US Treasury Constant Maturity (CMT) yield curve directly from
+    treasury.gov — 13 real tenors, no API key required.
     Returns DataFrame with columns: Tenor, Years, Rate (%).
     """
-    rows = []
-    seen_tickers = set()
-    
-    for tenor, ticker in YIELD_TICKERS.items():
-        if ticker in seen_tickers:
-            continue
-        seen_tickers.add(ticker)
-        try:
-            t = yf.Ticker(ticker)
-            info = t.fast_info
-            rate = info.get("lastPrice", None) or info.get("previousClose", None)
-            if rate:
-                rows.append({
-                    "Ticker": ticker,
-                    "Rate": rate,
-                })
-        except Exception:
-            pass
-    
-    # Build a simple curve from what we have
-    # Map actual tickers to approximate tenors
-    curve_map = {
-        "^IRX": [("3M", 0.25)],
-        "^FVX": [("5Y", 5.0)],
-        "^TNX": [("10Y", 10.0)],
-        "^TYX": [("30Y", 30.0)],
-    }
-    
-    curve_rows = []
-    for r in rows:
-        ticker = r["Ticker"]
-        rate = r["Rate"]
-        if ticker in curve_map:
-            for tenor, years in curve_map[ticker]:
-                curve_rows.append({
-                    "Tenor": tenor,
-                    "Years": years,
-                    "Rate (%)": round(rate, 4),
-                })
-    
-    # Interpolate missing standard tenors
-    if curve_rows:
-        df = pd.DataFrame(curve_rows).sort_values("Years").reset_index(drop=True)
-        # Interpolate for standard maturities used in forward pricing
-        standard_tenors = [
-            ("1W", 7/365), ("1M", 1/12), ("2M", 2/12),
-            ("3M", 3/12), ("6M", 6/12), ("1Y", 1.0),
-        ]
-        interp_rows = []
-        for tenor, years in standard_tenors:
-            rate = np.interp(years, df["Years"].values, df["Rate (%)"].values)
-            interp_rows.append({
-                "Tenor": tenor,
-                "Years": round(years, 4),
-                "Rate (%)": round(rate, 4),
-            })
-        return pd.DataFrame(interp_rows)
-    
+    year = datetime.now().year
+    url = (
+        "https://home.treasury.gov/resource-center/data-chart-center/"
+        f"interest-rates/daily-treasury-rates.csv/{year}/all"
+        f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}&download=true"
+    )
+    try:
+        df_raw = pd.read_csv(url)
+        # Most recent non-empty row
+        latest = df_raw.dropna(how="all").iloc[-1]
+        rows = []
+        for col, (tenor, years) in TREASURY_COL_MAP.items():
+            if col in df_raw.columns:
+                val = latest[col]
+                if pd.notna(val):
+                    rows.append({
+                        "Tenor": tenor,
+                        "Years": round(years, 6),
+                        "Rate (%)": round(float(val), 4),
+                    })
+        if rows:
+            return pd.DataFrame(rows).sort_values("Years").reset_index(drop=True)
+    except Exception:
+        pass
     return pd.DataFrame(columns=["Tenor", "Years", "Rate (%)"])
 
 
 def get_rate_for_tenor(tenor: str) -> float | None:
-    """Get interpolated USD rate for a given tenor string."""
+    """
+    Return the CMT rate for a tenor string.
+    If the tenor is not directly available (e.g. 1W), interpolate from the curve.
+    """
     curve = get_usd_yield_curve()
     if curve.empty:
         return None
+    # Direct match
     match = curve.loc[curve["Tenor"] == tenor, "Rate (%)"]
     if not match.empty:
-        return match.values[0]
+        return float(match.values[0])
+    # Interpolate using known years fraction
+    if tenor in _TENOR_YEARS:
+        years = _TENOR_YEARS[tenor]
+        rate = np.interp(years, curve["Years"].values, curve["Rate (%)"].values)
+        return round(float(rate), 4)
     return None
